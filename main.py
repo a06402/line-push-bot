@@ -13,7 +13,7 @@ app = Flask(__name__)
 
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
-GROUP_ID = os.getenv("GROUP_ID")
+GROUP_IDS = os.getenv("GROUP_IDS", "").split(",")
 
 SCHEDULE_FILE = "schedule.json"
 collecting = False
@@ -52,12 +52,13 @@ def cron_trigger():
     for item in schedules:
         if item["time"] == now_str:
             print(f"⏰ 推播時間到：{item['time']}，訊息數量：{len(item['messages'])}")
-            for msg in item["messages"]:
-                try:
-                    line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
-                    print(f"✅ 已推播：{msg}")
-                except Exception as e:
-                    print(f"❗推播錯誤：{e}")
+            for group_id in GROUP_IDS:
+                for msg in item["messages"]:
+                    try:
+                        line_bot_api.push_message(group_id.strip(), TextSendMessage(text=msg))
+                        print(f"✅ 已推播至 {group_id.strip()}：{msg}")
+                    except Exception as e:
+                        print(f"❗推播錯誤至 {group_id.strip()}：{e}")
         else:
             remaining.append(item)
 
