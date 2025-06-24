@@ -1,25 +1,29 @@
 import os
 import re
+import json
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
 
 app = Flask(__name__)
-scheduler = BackgroundScheduler()
-scheduler.start()
 
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
 handler = WebhookHandler(os.getenv("LINE_CHANNEL_SECRET"))
 GROUP_ID = os.getenv("GROUP_ID")
 
+SCHEDULE_FILE = "schedule.json"
 collecting = False
 collected_data = []
-send_time = None
+start_time = None
+
+# 初始化排程檔案
+if not os.path.exists(SCHEDULE_FILE):
+    with open(SCHEDULE_FILE, "w") as f:
+        json.dump([], f)
 
 def log_group_id(event):
     if hasattr(event.source, "group_id"):
@@ -36,9 +40,35 @@ def callback():
         abort(400)
     return "OK"
 
+@app.route("/cron", methods=["GET"])
+def cron_trigger():
+    now = datetime.utcnow() + timedelta(hours=8)
+    now_str = now.strftime("%Y-%m-%d %H:%M")
+
+    with open(SCHEDULE_FILE, "r") as f:
+        schedules = json.load(f)
+
+    remaining = []
+    for item in schedules:
+        if item["time"] == now_str:
+            print(f"⏰ 推播時間到：{item['time']}，訊息數量：{len(item['messages'])}")
+            for msg in item["messages"]:
+                try:
+                    line_bot_api.push_message(GROUP_ID, TextSendMessage(text=msg))
+                    print(f"✅ 已推播：{msg}")
+                except Exception as e:
+                    print(f"❗推播錯誤：{e}")
+        else:
+            remaining.append(item)
+
+    with open(SCHEDULE_FILE, "w") as f:
+        json.dump(remaining, f)
+
+    return "OK"
+
 @handler.add(MessageEvent, message=TextMessage)
 def handle_text(event):
-    global collecting, collected_data, send_time
+    global collecting, collected_data, start_time
 
     user_text = event.message.text.strip()
     log_group_id(event)
@@ -47,15 +77,15 @@ def handle_text(event):
         match = re.match(r"/Send\s+(\d{1,2}):(\d{2})", user_text)
         if match:
             hh, mm = map(int, match.groups())
-            now = datetime.now() + timedelta(hours=8)
-            send_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
-            if send_time < now:
-                send_time += timedelta(days=1)
+            now = datetime.utcnow() + timedelta(hours=8)
+            start_time = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if start_time < now:
+                start_time += timedelta(days=1)
             collecting = True
             collected_data = []
-            print(f"✅ 開始收集，預計推播時間：{send_time.strftime('%Y-%m-%d %H:%M')}")
             line_bot_api.reply_message(
-                event.reply_token, TextSendMessage(text=f"開始收集，將於 {send_time.strftime('%H:%M')} 推播")
+                event.reply_token,
+                TextSendMessage(text=f"開始收集，將於 {start_time.strftime('%H:%M')} 推播")
             )
         return
 
@@ -63,15 +93,19 @@ def handle_text(event):
         match = re.match(r"/End\s+(\d{1,2}):(\d{2})", user_text)
         if match and collecting:
             collecting = False
-            print(f"✅ 收集完成，共 {len(collected_data)} 筆資料")
-            print(f"✅ 排程建立：{send_time} 推播 {collected_data}")
-            scheduler.add_job(
-                func=send_collected,
-                trigger='date',
-                run_date=send_time - timedelta(hours=8),
-                id=f"job_{send_time.timestamp()}",
-                args=[collected_data.copy()]
-            )
+            schedule_time = start_time.strftime("%Y-%m-%d %H:%M")
+
+            with open(SCHEDULE_FILE, "r") as f:
+                schedules = json.load(f)
+
+            schedules.append({
+                "time": schedule_time,
+                "messages": collected_data
+            })
+
+            with open(SCHEDULE_FILE, "w") as f:
+                json.dump(schedules, f)
+
             line_bot_api.reply_message(
                 event.reply_token, TextSendMessage(text=f"收集結束，已排程推播")
             )
@@ -79,18 +113,6 @@ def handle_text(event):
 
     if collecting:
         collected_data.append(user_text)
-
-def send_collected(texts):
-    if not GROUP_ID:
-        print("❗GROUP_ID 未設定，無法推播")
-        return
-    print(f"⏰ 執行推播（共 {len(texts)} 則）：{texts}")
-    for text in texts:
-        try:
-            line_bot_api.push_message(GROUP_ID, TextSendMessage(text=text))
-            print(f"✅ 已推播：{text}")
-        except Exception as e:
-            print(f"❗推播錯誤：{e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
