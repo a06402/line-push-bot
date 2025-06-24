@@ -1,14 +1,16 @@
 import os
 import re
 import json
+import requests
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
-from linebot.models import MessageEvent, TextMessage, TextSendMessage
+from linebot.models import (
+    MessageEvent, TextMessage, ImageMessage, VideoMessage, TextSendMessage
+)
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
-
 app = Flask(__name__)
 
 line_bot_api = LineBotApi(os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
@@ -55,8 +57,13 @@ def cron_trigger():
             for group_id in GROUP_IDS:
                 for msg in item["messages"]:
                     try:
-                        line_bot_api.push_message(group_id.strip(), TextSendMessage(text=msg))
-                        print(f"✅ 已推播至 {group_id.strip()}：{msg}")
+                        if msg["type"] == "text":
+                            line_bot_api.push_message(group_id.strip(), TextSendMessage(text=msg["data"]))
+                        elif msg["type"] == "image":
+                            line_bot_api.push_message(group_id.strip(), msg["data"])
+                        elif msg["type"] == "video":
+                            line_bot_api.push_message(group_id.strip(), msg["data"])
+                        print(f"✅ 已推播至 {group_id.strip()}：{msg['type']}")
                     except Exception as e:
                         print(f"❗推播錯誤至 {group_id.strip()}：{e}")
         else:
@@ -85,8 +92,7 @@ def handle_text(event):
             collecting = True
             collected_data = []
             line_bot_api.reply_message(
-                event.reply_token,
-                TextSendMessage(text=f"開始收集，將於 {start_time.strftime('%H:%M')} 推播")
+                event.reply_token, TextSendMessage(text=f"開始收集，將於 {start_time.strftime('%H:%M')} 推播")
             )
         return
 
@@ -108,12 +114,51 @@ def handle_text(event):
                 json.dump(schedules, f)
 
             line_bot_api.reply_message(
-                event.reply_token, TextSendMessage(text=f"收集結束，已排程推播")
+                event.reply_token, TextSendMessage(text="收集結束，已排程推播")
             )
         return
 
+    elif user_text == "/list":
+        with open(SCHEDULE_FILE, "r") as f:
+            schedules = json.load(f)
+        reply = "\n".join([f"{s['time']}：{len(s['messages'])}則" for s in schedules]) or "目前無排程"
+        line_bot_api.reply_message(
+            event.reply_token, TextSendMessage(text=reply)
+        )
+        return
+
     if collecting:
-        collected_data.append(user_text)
+        collected_data.append({"type": "text", "data": user_text})
+
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    global collecting, collected_data
+    if collecting:
+        image_url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
+        image_message = {
+            "type": "image",
+            "data": {
+                "type": "image",
+                "originalContentUrl": image_url,
+                "previewImageUrl": image_url
+            }
+        }
+        collected_data.append(image_message)
+
+@handler.add(MessageEvent, message=VideoMessage)
+def handle_video(event):
+    global collecting, collected_data
+    if collecting:
+        video_url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
+        video_message = {
+            "type": "video",
+            "data": {
+                "type": "video",
+                "originalContentUrl": video_url,
+                "previewImageUrl": "https://i.imgur.com/placeholder.png"
+            }
+        }
+        collected_data.append(video_message)
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
