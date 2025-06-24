@@ -55,4 +55,96 @@ def callback():
         abort(400)
     return "OK"
 
-# 以下略（其餘邏輯與之前相同）
+@handler.add(MessageEvent, message=TextMessage)
+def handle_text(event):
+    global collecting, collected_data, start_time
+    user_id = event.source.user_id
+    text = event.message.text.strip()
+
+    if text.startswith("/Send "):
+        time_str = text[6:].strip()
+        try:
+            start_time = datetime.strptime(time_str, "%H:%M").time()
+            collecting = True
+            collected_data = []
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text=f"開始收集，將於 {time_str} 推播")
+            )
+        except:
+            pass
+    elif text.startswith("/End "):
+        time_str = text[5:].strip()
+        try:
+            end_time = datetime.strptime(time_str, "%H:%M").time()
+            collecting = False
+            with open(SCHEDULE_FILE, "r+") as f:
+                data = json.load(f)
+                data.append({
+                    "start": start_time.strftime("%H:%M"),
+                    "end": end_time.strftime("%H:%M"),
+                    "contents": collected_data
+                })
+                f.seek(0)
+                json.dump(data, f)
+                f.truncate()
+            line_bot_api.reply_message(
+                event.reply_token,
+                TextSendMessage(text="收集結束，已排程推播")
+            )
+        except:
+            pass
+    elif text == "/list":
+        with open(SCHEDULE_FILE, "r") as f:
+            data = json.load(f)
+        msg = "\n".join([f"{s['start']} ~ {s['end']}" for s in data]) or "目前沒有排程"
+        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=msg))
+    elif text.startswith("/use ") or text.startswith("/group "):
+        print("⚙️ DEBUG 指令:", text)
+    elif collecting:
+        collected_data.append({"type": "text", "text": text})
+
+@handler.add(MessageEvent, message=ImageMessage)
+def handle_image(event):
+    if collecting:
+        content = line_bot_api.get_message_content(event.message.id)
+        image_bytes = content.content
+        url = upload_to_imagekit(image_bytes, "image.jpg")
+        if url:
+            collected_data.append({"type": "image", "url": url})
+
+@handler.add(MessageEvent, message=VideoMessage)
+def handle_video(event):
+    if collecting:
+        content = line_bot_api.get_message_content(event.message.id)
+        video_bytes = content.content
+        url = upload_to_imagekit(video_bytes, "video.mp4")
+        if url:
+            collected_data.append({"type": "video", "url": url})
+
+@app.route("/cron", methods=["GET"])
+def cron():
+    now = datetime.utcnow() + timedelta(hours=8)
+    current_time = now.strftime("%H:%M")
+    with open(SCHEDULE_FILE, "r+") as f:
+        data = json.load(f)
+        remaining = []
+        for item in data:
+            if item["end"] == current_time:
+                for gid in GROUP_IDS:
+                    for c in item["contents"]:
+                        if c["type"] == "text":
+                            line_bot_api.push_message(gid, TextSendMessage(text=c["text"]))
+                        elif c["type"] == "image":
+                            line_bot_api.push_message(gid, ImageSendMessage(original_content_url=c["url"], preview_image_url=c["url"]))
+                        elif c["type"] == "video":
+                            line_bot_api.push_message(gid, VideoSendMessage(original_content_url=c["url"], preview_image_url=c["url"]))
+            else:
+                remaining.append(item)
+        f.seek(0)
+        json.dump(remaining, f)
+        f.truncate()
+    return "OK"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
