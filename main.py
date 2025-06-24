@@ -53,6 +53,7 @@ def handle_text(event):
                 send_time += timedelta(days=1)
             collecting = True
             collected_data = []
+            print(f"✅ 開始收集，預計推播時間：{send_time.strftime('%Y-%m-%d %H:%M')}")
             line_bot_api.reply_message(
                 event.reply_token, TextSendMessage(text=f"開始收集，將於 {send_time.strftime('%H:%M')} 推播")
             )
@@ -62,6 +63,8 @@ def handle_text(event):
         match = re.match(r"/End\s+(\d{1,2}):(\d{2})", user_text)
         if match and collecting:
             collecting = False
+            print(f"✅ 收集完成，共 {len(collected_data)} 筆資料")
+            print(f"✅ 排程建立：{send_time} 推播 {collected_data}")
             scheduler.add_job(
                 func=send_collected,
                 trigger='date',
@@ -79,13 +82,15 @@ def handle_text(event):
 
 def send_collected(texts):
     if not GROUP_ID:
-        print("⚠️ 尚未設定 GROUP_ID")
+        print("❗GROUP_ID 未設定，無法推播")
         return
+    print(f"⏰ 執行推播（共 {len(texts)} 則）：{texts}")
     for text in texts:
         try:
             line_bot_api.push_message(GROUP_ID, TextSendMessage(text=text))
+            print(f"✅ 已推播：{text}")
         except Exception as e:
-            print("❗推播錯誤:", e)
+            print(f"❗推播錯誤：{e}")
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
